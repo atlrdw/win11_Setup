@@ -1,0 +1,20 @@
+
+NEXT STEPS:
+  1. $(if ($needsReboot) { "REBOOT NOW — WSL features need a restart" } else { "Reboot recommended to ensure PATH changes take effect" })
+  2. After reboot, launch 'AlmaLinux9' from Start to set your WSL username/password
+  3. Run: claude  (to verify Claude Code is working)
+  4. Sign into: Chrome, Firefox, PIA VPN, VS Code (sync settings)
+  5. PIA VPN: launch and log in with your credentials
+
+OPTIONAL (run separately):
+  # Install a Nerd Font for VS Code / Terminal
+  winget install --id DEVCOM.JetBrainsMonoNerdFont
+
+  # Better PowerShell prompt
+  winget install --id JanDeDobbeleer.OhMyPosh
+  oh-my-posh init pwsh | Invoke-Expression
+
+  # Install RHEL UBI image manually (genuine Red Hat, free tier):
+  # https://catalog.redhat.com/software/containers/ubi/ubi9
+
+"@ -ForegroundColor White
