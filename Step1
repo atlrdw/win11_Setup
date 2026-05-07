@@ -1,0 +1,164 @@
+#Requires -RunAsAdministrator
+<#
+.SYNOPSIS
+    Windows 11 Dev & Power-User Setup Script
+    Run in an elevated PowerShell window (right-click → "Run as Administrator")
+#>
+
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
+
+Write-Host "========================================" -ForegroundColor Cyan
+Write-Host "  Windows 11 Setup Script" -ForegroundColor Cyan
+Write-Host "========================================" -ForegroundColor Cyan
+
+# ─── 1. ENSURE WINGET IS AVAILABLE ───────────────────────────────────────────
+Write-Host "`n[1/6] Checking winget..." -ForegroundColor Yellow
+
+if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
+    Write-Host "winget not found. Installing via App Installer..." -ForegroundColor Yellow
+    # Winget ships with App Installer. Trigger the store update silently.
+    $progressPreference = 'SilentlyContinue'
+    Invoke-WebRequest -Uri "https://aka.ms/getwinget" -OutFile "$env:TEMP\AppInstaller.msixbundle"
+    Add-AppxPackage -Path "$env:TEMP\AppInstaller.msixbundle"
+    Write-Host "winget installed. You may need to restart this script." -ForegroundColor Green
+} else {
+    $wingetVer = (winget --version)
+    Write-Host "winget found: $wingetVer" -ForegroundColor Green
+}
+
+# Accept the Microsoft Store agreements non-interactively
+winget settings --enable LocalManifestFiles 2>$null
+
+# ─── 2. CORE APPS VIA WINGET ─────────────────────────────────────────────────
+Write-Host "`n[2/6] Installing applications via winget..." -ForegroundColor Yellow
+
+$apps = @(
+    # Browser
+    @{ id = "Google.Chrome";                 name = "Chrome" },
+    @{ id = "Mozilla.Firefox";               name = "Firefox" },
+
+    # Privacy & Security
+    @{ id = "PrivateInternetAccess.PrivateInternetAccess"; name = "PIA VPN" },
+    @{ id = "Sandboxie.Classic";             name = "Sandboxie Plus" },
+
+    # Dev Tools
+    @{ id = "Microsoft.VisualStudioCode";    name = "VS Code" },
+    @{ id = "Python.Python.3.12";            name = "Python 3.12" },
+    @{ id = "Git.Git";                       name = "Git" },
+    @{ id = "cURL.cURL";                     name = "cURL" },
+    @{ id = "OpenJS.NodeJS.LTS";             name = "Node.js LTS" },  # needed for Claude Code
+
+    # Utilities
+    @{ id = "Notepad++.Notepad++";           name = "Notepad++" },
+    @{ id = "VideoLAN.VLC";                  name = "VLC" },
+    @{ id = "qBittorrent.qBittorrent";       name = "qBittorrent" },
+    @{ id = "7zip.7zip";                     name = "7-Zip" },
+
+    # Claude
+    @{ id = "Anthropic.Cowork";              name = "Claude Cowork" },
+
+    # Windows Enhancements
+    @{ id = "Microsoft.WindowsTerminal";     name = "Windows Terminal" },
+    @{ id = "Microsoft.PowerToys";           name = "PowerToys" },
+)
+
+foreach ($app in $apps) {
+    Write-Host "  → Installing $($app.name)..." -ForegroundColor Gray
+    winget install --id $app.id `
+        --silent `
+        --accept-package-agreements `
+        --accept-source-agreements `
+        --no-upgrade 2>&1 | Out-Null
+
+    if ($LASTEXITCODE -eq 0 -or $LASTEXITCODE -eq -1978335189) {
+        # -1978335189 = already installed (WINGET_INSTALLED)
+        Write-Host "    ✓ $($app.name)" -ForegroundColor Green
+    } else {
+        Write-Host "    ✗ $($app.name) (exit code $LASTEXITCODE — check manually)" -ForegroundColor Red
+    }
+}
+
+# ─── 3. CLAUDE CODE (npm global) ─────────────────────────────────────────────
+Write-Host "`n[3/6] Installing Claude Code via npm..." -ForegroundColor Yellow
+
+# Refresh PATH so npm is available in this session
+$env:PATH = [System.Environment]::GetEnvironmentVariable("PATH","Machine") + ";" +
+            [System.Environment]::GetEnvironmentVariable("PATH","User")
+
+if (Get-Command npm -ErrorAction SilentlyContinue) {
+    npm install -g @anthropic-ai/claude-code
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "  ✓ Claude Code installed" -ForegroundColor Green
+    } else {
+        Write-Host "  ✗ Claude Code install failed — run: npm install -g @anthropic-ai/claude-code" -ForegroundColor Red
+    }
+} else {
+    Write-Host "  ! npm not yet on PATH. After reboot, run: npm install -g @anthropic-ai/claude-code" -ForegroundColor Yellow
+}
+
+# ─── 4. WSL 2 ────────────────────────────────────────────────────────────────
+Write-Host "`n[4/6] Setting up WSL 2..." -ForegroundColor Yellow
+
+$wslFeature = Get-WindowsOptionalFeature -Online -FeatureName Microsoft-Windows-Subsystem-Linux
+$vmFeature   = Get-WindowsOptionalFeature -Online -FeatureName VirtualMachinePlatform
+
+if ($wslFeature.State -ne "Enabled" -or $vmFeature.State -ne "Enabled") {
+    Write-Host "  Enabling WSL 2 features (requires reboot)..." -ForegroundColor Yellow
+    dism.exe /online /enable-feature /featurename:Microsoft-Windows-Subsystem-Linux /all /norestart
+    dism.exe /online /enable-feature /featurename:VirtualMachinePlatform /all /norestart
+    Write-Host "  ✓ WSL features enabled — a REBOOT is required before distro install" -ForegroundColor Yellow
+    $needsReboot = $true
+} else {
+    Write-Host "  ✓ WSL features already enabled" -ForegroundColor Green
+    $needsReboot = $false
+}
+
+# Set WSL 2 as default
+wsl --set-default-version 2 2>&1 | Out-Null
+Write-Host "  ✓ WSL default version set to 2" -ForegroundColor Green
+
+# ─── 5. WSL DISTRO — AlmaLinux 9 (RHEL 10 compatible) ───────────────────────
+Write-Host "`n[5/6] Installing WSL distro..." -ForegroundColor Yellow
+Write-Host @"
+  NOTE: RHEL 10 is not available in the WSL store (Red Hat's commercial OS).
+  Installing AlmaLinux 9 — a 1:1 RHEL-compatible rebuild, free and fully supported.
+  Alternatively: Rocky Linux 9 is another excellent RHEL clone.
+  
+  If you need genuine RHEL, you can import a UBI image manually after this script.
+"@ -ForegroundColor DarkYellow
+
+if (-not $needsReboot) {
+    # Check if AlmaLinux is already installed
+    $installed = wsl --list --quiet 2>&1
+    if ($installed -notcontains "AlmaLinux-9") {
+        Write-Host "  Installing AlmaLinux 9..." -ForegroundColor Gray
+        winget install --id AlmaLinux.AlmaLinux.9 `
+            --silent `
+            --accept-package-agreements `
+            --accept-source-agreements 2>&1
+
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "  ✓ AlmaLinux 9 installed. Run 'AlmaLinux9' to initialize." -ForegroundColor Green
+        } else {
+            # Fallback: install via wsl command
+            wsl --install -d AlmaLinux-9 --no-launch
+        }
+    } else {
+        Write-Host "  ✓ AlmaLinux 9 already installed" -ForegroundColor Green
+    }
+} else {
+    Write-Host "  ! Skipping distro install — reboot first, then re-run this script" -ForegroundColor Yellow
+}
+
+# ─── 6. SUMMARY ──────────────────────────────────────────────────────────────
+Write-Host "`n========================================" -ForegroundColor Cyan
+Write-Host "  Setup Complete!" -ForegroundColor Cyan
+Write-Host "========================================" -ForegroundColor Cyan
+
+Write-Host @"
+
+if ($needsReboot) {
+    Write-Host "Rebooting in 30 seconds... Ctrl+C to cancel" -ForegroundColor Red
+    Start-Sleep -Seconds 30
+    Restart-Computer -Force
+}
