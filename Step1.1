@@ -1,0 +1,228 @@
+#Requires -RunAsAdministrator
+<#
+.SYNOPSIS
+    Windows 11 Dev & Power-User Setup Script
+    Run in an elevated PowerShell window (right-click → "Run as Administrator")
+#>
+
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
+
+Write-Host "========================================" -ForegroundColor Cyan
+Write-Host "  Windows 11 Setup Script" -ForegroundColor Cyan
+Write-Host "========================================" -ForegroundColor Cyan
+
+# ─── 1. ENSURE WINGET IS AVAILABLE ───────────────────────────────────────────
+Write-Host "`n[1/7] Checking winget..." -ForegroundColor Yellow
+
+if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
+    Write-Host "winget not found. Installing via App Installer..." -ForegroundColor Yellow
+    $progressPreference = 'SilentlyContinue'
+    Invoke-WebRequest -Uri "https://aka.ms/getwinget" -OutFile "$env:TEMP\AppInstaller.msixbundle"
+    Add-AppxPackage -Path "$env:TEMP\AppInstaller.msixbundle"
+    Write-Host "winget installed. You may need to restart this script." -ForegroundColor Green
+} else {
+    $wingetVer = (winget --version)
+    Write-Host "winget found: $wingetVer" -ForegroundColor Green
+}
+
+# ─── 2. CORE APPS VIA WINGET ─────────────────────────────────────────────────
+Write-Host "`n[2/7] Installing applications via winget..." -ForegroundColor Yellow
+
+$apps = @(
+    # Browsers
+    @{ id = "Google.Chrome";                              name = "Chrome" },
+    @{ id = "Mozilla.Firefox";                            name = "Firefox" },
+
+    # Privacy & Security
+    @{ id = "PrivateInternetAccess.PrivateInternetAccess"; name = "PIA VPN" },
+    @{ id = "Sandboxie.Classic";                          name = "Sandboxie Plus" },
+
+    # Dev Tools
+    @{ id = "Microsoft.VisualStudioCode";                 name = "VS Code" },
+    @{ id = "Python.Python.3.12";                         name = "Python 3.12" },
+    @{ id = "Git.Git";                                    name = "Git" },
+    @{ id = "cURL.cURL";                                  name = "cURL" },
+    @{ id = "OpenJS.NodeJS.LTS";                          name = "Node.js LTS" },
+
+    # Utilities
+    @{ id = "Notepad++.Notepad++";                        name = "Notepad++" },
+    @{ id = "VideoLAN.VLC";                               name = "VLC" },
+    @{ id = "qBittorrent.qBittorrent";                    name = "qBittorrent" },
+    @{ id = "7zip.7zip";                                  name = "7-Zip" },
+
+    # Claude
+    @{ id = "Anthropic.Cowork";                           name = "Claude Cowork" },
+
+    # Windows Enhancements
+    @{ id = "Microsoft.WindowsTerminal";                  name = "Windows Terminal" },
+    @{ id = "Microsoft.PowerToys";                        name = "PowerToys" },
+    @{ id = "DEVCOM.JetBrainsMonoNerdFont";               name = "JetBrains Mono Nerd Font" },
+)
+
+foreach ($app in $apps) {
+    Write-Host "  → Installing $($app.name)..." -ForegroundColor Gray
+    winget install --id $app.id `
+        --source winget `
+        --silent `
+        --accept-package-agreements `
+        --accept-source-agreements `
+        --no-upgrade 2>&1 | Out-Null
+
+    if ($LASTEXITCODE -eq 0 -or $LASTEXITCODE -eq -1978335189) {
+        Write-Host "    ✓ $($app.name)" -ForegroundColor Green
+    } else {
+        Write-Host "    ✗ $($app.name) (exit code $LASTEXITCODE — check manually)" -ForegroundColor Red
+    }
+}
+
+# ─── 3. CLAUDE CODE (npm global) ─────────────────────────────────────────────
+Write-Host "`n[3/7] Installing Claude Code via npm..." -ForegroundColor Yellow
+
+$env:PATH = [System.Environment]::GetEnvironmentVariable("PATH","Machine") + ";" +
+            [System.Environment]::GetEnvironmentVariable("PATH","User")
+
+if (Get-Command npm -ErrorAction SilentlyContinue) {
+    npm install -g @anthropic-ai/claude-code
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "  ✓ Claude Code installed" -ForegroundColor Green
+    } else {
+        Write-Host "  ✗ Claude Code install failed — run: npm install -g @anthropic-ai/claude-code" -ForegroundColor Red
+    }
+} else {
+    Write-Host "  ! npm not yet on PATH. After reboot, run: npm install -g @anthropic-ai/claude-code" -ForegroundColor Yellow
+}
+
+# ─── 4. VLC FILE ASSOCIATIONS ────────────────────────────────────────────────
+Write-Host "`n[4/7] Associating media files with VLC..." -ForegroundColor Yellow
+
+# Find VLC executable
+$vlcPath = "${env:ProgramFiles}\VideoLAN\VLC\vlc.exe"
+if (-not (Test-Path $vlcPath)) {
+    $vlcPath = "${env:ProgramFiles(x86)}\VideoLAN\VLC\vlc.exe"
+}
+
+if (Test-Path $vlcPath) {
+    $mediaExtensions = @(
+        # Video
+        ".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm",
+        ".m4v", ".mpg", ".mpeg", ".ts", ".m2ts", ".vob", ".3gp",
+        # Audio
+        ".mp3", ".flac", ".aac", ".ogg", ".wav", ".wma", ".m4a",
+        ".opus", ".aiff", ".ape"
+    )
+
+    foreach ($ext in $mediaExtensions) {
+        # Register the file type association via ftype/assoc equivalents in registry
+        $progId = "VLC$($ext.TrimStart('.'))"
+        $regPath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\$ext\UserChoice"
+        try {
+            # Use cmd's assoc/ftype won't survive without admin on Win11 — use Start-Process workaround
+            & cmd /c "assoc $ext=VLC$($ext.TrimStart('.'))" 2>$null | Out-Null
+            Write-Host "    ✓ $ext" -ForegroundColor Green
+        } catch {
+            Write-Host "    ~ $ext (may need manual association)" -ForegroundColor Yellow
+        }
+    }
+
+    # More reliable: run VLC's own file association handler
+    Write-Host "  Running VLC built-in file association tool..." -ForegroundColor Gray
+    Start-Process -FilePath $vlcPath -ArgumentList "--reset-plugins-cache" -Wait -WindowStyle Hidden
+    & "$vlcPath" /no-qt-privacy-ask /FileAssoc 2>$null
+
+    Write-Host "  ✓ VLC media associations applied" -ForegroundColor Green
+    Write-Host "  Note: Windows 11 may prompt you to confirm default app changes." -ForegroundColor DarkYellow
+} else {
+    Write-Host "  ! VLC not found at expected path — skipping associations" -ForegroundColor Yellow
+    Write-Host "    Open VLC manually: Tools → Preferences → Set up associations" -ForegroundColor Yellow
+}
+
+# ─── 5. POWER PLAN ───────────────────────────────────────────────────────────
+Write-Host "`n[5/7] Configuring power plan..." -ForegroundColor Yellow
+
+# Monitor timeout: 1 hour (3600 seconds) on both AC and battery
+# Sleep/shutdown: never (0 = never)
+powercfg /change monitor-timeout-ac 60
+powercfg /change monitor-timeout-dc 60
+powercfg /change standby-timeout-ac 0
+powercfg /change standby-timeout-dc 0
+powercfg /change hibernate-timeout-ac 0
+powercfg /change hibernate-timeout-dc 0
+
+Write-Host "  ✓ Monitor timeout: 60 minutes" -ForegroundColor Green
+Write-Host "  ✓ Sleep/hibernate: never" -ForegroundColor Green
+
+# ─── 6. WSL 2 + ALMALINUX 9 ──────────────────────────────────────────────────
+Write-Host "`n[6/7] Setting up WSL 2..." -ForegroundColor Yellow
+
+$wslFeature = Get-WindowsOptionalFeature -Online -FeatureName Microsoft-Windows-Subsystem-Linux
+$vmFeature   = Get-WindowsOptionalFeature -Online -FeatureName VirtualMachinePlatform
+
+if ($wslFeature.State -ne "Enabled" -or $vmFeature.State -ne "Enabled") {
+    Write-Host "  Enabling WSL 2 features (requires reboot)..." -ForegroundColor Yellow
+    dism.exe /online /enable-feature /featurename:Microsoft-Windows-Subsystem-Linux /all /norestart
+    dism.exe /online /enable-feature /featurename:VirtualMachinePlatform /all /norestart
+    $needsReboot = $true
+} else {
+    Write-Host "  ✓ WSL features already enabled" -ForegroundColor Green
+    $needsReboot = $false
+}
+
+wsl --set-default-version 2 2>&1 | Out-Null
+Write-Host "  ✓ WSL default version set to 2" -ForegroundColor Green
+
+if (-not $needsReboot) {
+    $installed = wsl --list --quiet 2>&1
+    if ($installed -notcontains "AlmaLinux-9") {
+        Write-Host "  Installing AlmaLinux 9..." -ForegroundColor Gray
+        winget install --id AlmaLinux.AlmaLinux.9 `
+            --source winget `
+            --silent `
+            --accept-package-agreements `
+            --accept-source-agreements 2>&1
+
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "  ✓ AlmaLinux 9 installed. Run 'AlmaLinux9' to initialize." -ForegroundColor Green
+        } else {
+            wsl --install -d AlmaLinux-9 --no-launch
+        }
+    } else {
+        Write-Host "  ✓ AlmaLinux 9 already installed" -ForegroundColor Green
+    }
+} else {
+    Write-Host "  ! Reboot required before distro install — re-run script after reboot" -ForegroundColor Yellow
+}
+
+# ─── 7. SUMMARY ──────────────────────────────────────────────────────────────
+Write-Host "`n========================================" -ForegroundColor Cyan
+Write-Host "  Setup Complete!" -ForegroundColor Cyan
+Write-Host "========================================" -ForegroundColor Cyan
+
+Write-Host @"
+
+NEXT STEPS:
+  1. $(if ($needsReboot) { "REBOOT NOW — WSL features need a restart" } else { "Reboot recommended to ensure PATH changes take effect" })
+  2. After reboot, launch 'AlmaLinux9' from Start to set your WSL username/password
+  3. Run: claude  (to verify Claude Code is working)
+  4. Sign into: Chrome, Firefox, PIA VPN, VS Code (sync settings)
+  5. If Cowork wasn't found via winget, download from claude.ai
+
+OPTIONAL (run separately):
+  # Oh My Posh — better PowerShell prompt
+  winget install --id JanDeDobbeleer.OhMyPosh --source winget
+  oh-my-posh init pwsh | Invoke-Expression
+
+  # To make Oh My Posh persist across sessions:
+  Add-Content `$PROFILE "`noh-my-posh init pwsh | Invoke-Expression"
+
+  # Genuine RHEL 10 WSL (requires free Red Hat developer account):
+  # https://developers.redhat.com/products/rhel/download
+
+"@ -ForegroundColor White
+
+if ($needsReboot) {
+    Write-Host "Rebooting in 30 seconds... Ctrl+C to cancel" -ForegroundColor Red
+    Start-Sleep -Seconds 30
+    Restart-Computer -Force
+}
+
+
