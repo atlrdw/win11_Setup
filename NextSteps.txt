@@ -1,6 +1,7 @@
 
 winget install --id VideoLAN.VLC --accept-package-agreements --accept-source-agreements
 
+notepad C:\setup.ps1
 
 
 NEXT STEPS:
