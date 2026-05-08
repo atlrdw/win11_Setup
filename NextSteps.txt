@@ -1,4 +1,8 @@
 
+winget install --id VideoLAN.VLC --accept-package-agreements --accept-source-agreements
+
+
+
 NEXT STEPS:
   1. $(if ($needsReboot) { "REBOOT NOW — WSL features need a restart" } else { "Reboot recommended to ensure PATH changes take effect" })
   2. After reboot, launch 'AlmaLinux9' from Start to set your WSL username/password
